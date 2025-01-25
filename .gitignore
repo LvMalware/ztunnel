@@ -1,0 +1,4 @@
+*~
+*.swp
+zig-out/
+.zig-cache/
