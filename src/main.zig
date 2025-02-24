@@ -29,7 +29,7 @@ pub fn main() !void {
     try tunnel.handshake(peer);
     std.debug.print("Handshake OK\n", .{});
 
-    _ = try tunnel.writeFrame("AA");
+    _ = try tunnel.writeFrame("Hello!");
     std.debug.print("Sent data\n", .{});
     const data = try tunnel.readFrame(allocator);
     defer allocator.free(data);

@@ -13,14 +13,18 @@ pub const Reader = std.io.Reader(Self, anyerror, read);
 pub const Writer = std.io.Writer(Self, anyerror, write);
 
 peer: [SealedBox.public_length]u8,
+prng: *std.Random.Xoshiro256,
 secret: [GCM.key_length]u8,
 stream: std.net.Stream,
 keypair: SealedBox.KeyPair,
 allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: KeyPair) Self {
+    const prng = allocator.create(std.Random.Xoshiro256) catch unreachable;
+    prng.seed(std.crypto.random.int(u64));
     return .{
         .peer = undefined,
+        .prng = prng,
         .secret = undefined,
         .stream = stream,
         .keypair = keypair,
@@ -73,6 +77,7 @@ pub fn handshake(self: *Self, peer: [SealedBox.public_length]u8) !void {
 pub fn deinit(self: *Self) void {
     self.stream.close();
     @memset(self.secret[0..], 0);
+    self.allocator.destroy(self.prng);
 }
 
 pub fn write(self: Self, buffer: []const u8) !usize {
@@ -123,14 +128,11 @@ pub fn writeFrame(self: Self, data: []const u8) !void {
     const nonce = buffer[0..GCM.nonce_length];
     const plain = buffer[nonce.len + 4 .. buffer.len - tag.len];
 
-    var prng = std.rand.DefaultPrng.init(
-        @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))),
-    );
-    prng.random().bytes(nonce);
+    self.prng.random().bytes(nonce);
 
     buffer[4 + nonce.len] = @truncate(padLen);
     std.mem.copyForwards(u8, plain[1..], data);
-    prng.random().bytes(plain[plain.len - padLen ..]);
+    self.prng.random().bytes(plain[plain.len - padLen ..]);
 
     GCM.encrypt(
         plain,
