@@ -1,77 +1,123 @@
 const std = @import("std");
-const AES = std.crypto.core.aes.Aes128;
-const GCM = std.crypto.aead.aes_gcm.Aes128Gcm;
+const AES = std.crypto.core.aes.Aes256;
+const GCM = std.crypto.aead.aes_gcm.Aes256Gcm;
+const Kyber = std.crypto.kem.kyber_d00.Kyber768;
+const X25519 = std.crypto.dh.X25519;
 const pbkdf2 = std.crypto.pwhash.pbkdf2;
-const SealedBox = std.crypto.nacl.SealedBox;
 
 const Self = @This();
 
-pub const KeyPair = SealedBox.KeyPair;
-pub const public_length = SealedBox.public_length;
+pub const Mode = enum(u8) {
+    client,
+    server,
+};
+
+pub const PublicKey = struct {
+    ecc: [X25519.public_length]u8,
+    kyber: Kyber.PublicKey,
+};
+
+pub const PrivateKey = struct {
+    ecc: [X25519.secret_length]u8,
+    kyber: Kyber.SecretKey,
+};
+
+pub const KeyPair = struct {
+    public: PublicKey,
+    private: PrivateKey,
+    pub fn generate() KeyPair {
+        const ecc = X25519.KeyPair.generate();
+        const kyber = Kyber.KeyPair.generate();
+        return .{
+            .public = .{
+                .ecc = ecc.public_key,
+                .kyber = kyber.public_key,
+            },
+            .private = .{
+                .ecc = ecc.secret_key,
+                .kyber = kyber.secret_key,
+            },
+        };
+    }
+};
 
 pub const Reader = std.io.Reader(Self, anyerror, read);
 pub const Writer = std.io.Writer(Self, anyerror, write);
 
-peer: [SealedBox.public_length]u8,
 prng: *std.Random.Xoshiro256,
 secret: [GCM.key_length]u8,
 stream: std.net.Stream,
-keypair: SealedBox.KeyPair,
+keypair: KeyPair,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: KeyPair) Self {
+pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: ?KeyPair) Self {
     const prng = allocator.create(std.Random.Xoshiro256) catch unreachable;
     prng.seed(std.crypto.random.int(u64));
     return .{
-        .peer = undefined,
         .prng = prng,
         .secret = undefined,
         .stream = stream,
-        .keypair = keypair,
+        .keypair = keypair orelse KeyPair.generate(),
         .allocator = allocator,
     };
 }
 
-pub fn handshake(self: *Self, peer: [SealedBox.public_length]u8) !void {
-    std.crypto.random.bytes(self.secret[0..]);
-    // challenge-response authentication
-    var sealed: [GCM.key_length + SealedBox.seal_length]u8 = undefined;
-    var response: [GCM.key_length]u8 = undefined;
-    var challenge: [GCM.key_length]u8 = undefined;
+pub fn keyExchange(self: *Self, mode: Mode) !void {
+    var sha3 = std.crypto.hash.sha3.Sha3_384.init(.{});
+    var digest: [std.crypto.hash.sha3.Sha3_384.digest_length]u8 = undefined;
 
-    try SealedBox.seal(sealed[0..], self.secret[0..], peer);
-    _ = try self.stream.write(sealed[0..]);
+    defer @memset(&digest, 0);
 
-    _ = try self.stream.read(sealed[0..]);
-    try SealedBox.open(&challenge, sealed[0..], self.keypair);
+    switch (mode) {
+        .client => {
+            const kyber_public = self.keypair.public.kyber.toBytes();
+            try self.stream.writeAll(&self.keypair.public.ecc);
+            try self.stream.writeAll(&kyber_public);
 
-    try SealedBox.seal(sealed[0..], &challenge, peer);
-    _ = try self.stream.write(sealed[0..]);
+            var ecc_public: [X25519.public_length]u8 = undefined;
+            var kyber_ciphertext: [Kyber.ciphertext_length]u8 = undefined;
+            if (try self.stream.readAll(&ecc_public) != ecc_public.len) return error.BrokenPipe;
+            if (try self.stream.readAll(&kyber_ciphertext) != kyber_ciphertext.len) return error.BrokenPipe;
 
-    _ = try self.stream.read(sealed[0..]);
-    try SealedBox.open(&response, &sealed, self.keypair);
+            // TODO: optionally, verify peer's public key
 
-    if (!std.mem.eql(u8, &response, &self.secret))
-        return error.ChallengeResponse;
+            var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, ecc_public);
+            var shared_kyber = try self.keypair.private.kyber.decaps(&kyber_ciphertext);
+            defer {
+                @memset(&shared_ecc, 0);
+                @memset(&shared_kyber, 0);
+            }
 
-    try pbkdf2(
-        &response,
-        &self.secret,
-        &peer,
-        10000,
-        std.crypto.auth.hmac.sha2.HmacSha256,
-    );
-    try pbkdf2(
-        &self.secret,
-        &challenge,
-        &self.keypair.public_key,
-        10000,
-        std.crypto.auth.hmac.sha2.HmacSha256,
-    );
+            sha3.update(&shared_ecc);
+            sha3.update(&shared_kyber);
+        },
+        .server => {
+            var ecc_public: [X25519.public_length]u8 = undefined;
+            var kyber_public: [Kyber.PublicKey.bytes_length]u8 = undefined;
+            if (try self.stream.readAll(&ecc_public) != ecc_public.len) return error.BrokenPipe;
+            if (try self.stream.readAll(&kyber_public) != kyber_public.len) return error.BrokenPipe;
 
-    for (0..self.secret.len) |i| self.secret[i] ^= response[i];
+            // TODO: optionally, verify peer's public key
 
-    std.mem.copyForwards(u8, self.peer[0..], &peer);
+            const kyber = try Kyber.PublicKey.fromBytes(&kyber_public);
+            var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, ecc_public);
+            var shared_kyber = kyber.encaps(null);
+            defer {
+                @memset(&shared_ecc, 0);
+                @memset(&shared_kyber.shared_secret, 0);
+            }
+
+            try self.stream.writeAll(&self.keypair.public.ecc);
+            try self.stream.writeAll(&shared_kyber.ciphertext);
+
+            sha3.update(&shared_ecc);
+            sha3.update(&shared_kyber.shared_secret);
+        },
+    }
+
+    sha3.final(&digest);
+
+    std.mem.copyForwards(u8, self.secret[0..], digest[0..self.secret.len]);
 }
 
 pub fn deinit(self: *Self) void {
@@ -138,7 +184,7 @@ pub fn writeFrame(self: Self, data: []const u8) !void {
         plain,
         tag,
         plain,
-        &self.peer,
+        "",
         nonce.*,
         self.secret,
     );
@@ -146,20 +192,13 @@ pub fn writeFrame(self: Self, data: []const u8) !void {
     const aes = AES.initEnc(self.secret);
     aes.encrypt(buffer[0..16], buffer[0..16]);
 
-    var sent: usize = 0;
-    while (sent < buffer.len) {
-        sent += try self.stream.write(buffer[sent..]);
-    }
+    try self.stream.writeAll(buffer[0..]);
 }
 
 pub fn readFrame(self: Self, allocator: std.mem.Allocator) ![]u8 {
     var nonceLen: [4 + GCM.nonce_length]u8 = undefined;
 
-    var received: usize = 0;
-    while (received < nonceLen.len) {
-        received += try self.stream.read(nonceLen[0..]);
-        if (received == 0) return error.BrokenPipe;
-    }
+    if (try self.stream.readAll(nonceLen[0..]) != nonceLen.len) return error.BrokenPipe;
 
     // AES-ECB decrypt nonce + bufLen
     const aes = AES.initDec(self.secret);
@@ -169,10 +208,7 @@ pub fn readFrame(self: Self, allocator: std.mem.Allocator) ![]u8 {
     const buffer = try self.allocator.alloc(u8, length);
     defer self.allocator.free(buffer);
 
-    received = 0;
-    while (received < buffer.len) {
-        received += try self.stream.read(buffer[received..]);
-    }
+    if (try self.stream.readAll(buffer[0..]) != buffer.len) return error.BrokenPipe;
 
     const tag = buffer[buffer.len - GCM.tag_length ..][0..GCM.tag_length];
     const nonce = nonceLen[0..GCM.nonce_length];
@@ -182,7 +218,7 @@ pub fn readFrame(self: Self, allocator: std.mem.Allocator) ![]u8 {
         plain,
         plain,
         tag.*,
-        &self.keypair.public_key,
+        "",
         nonce.*,
         self.secret,
     );
