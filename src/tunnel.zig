@@ -62,6 +62,7 @@ pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: ?KeyP
     };
 }
 
+/// use X25519Kyber768 to perform key-exchange.
 pub fn keyExchange(self: *Self, mode: Mode) !void {
     var sha3 = std.crypto.hash.sha3.Sha3_384.init(.{});
     var digest: [std.crypto.hash.sha3.Sha3_384.digest_length]u8 = undefined;
@@ -136,7 +137,7 @@ pub fn read(self: Self, buffer: []u8) !usize {
     defer self.allocator.free(data);
     const limit = if (data.len > buffer.len) buffer.len else data.len;
     std.mem.copyForwards(u8, buffer[0..], data[0..limit]);
-    return data.len;
+    return limit;
 }
 
 /// conforms to Reader interface
@@ -149,14 +150,38 @@ pub fn writer(self: Self) Writer {
     return .{ .context = self };
 }
 
+/// The frame contents looks like the following:
+///
+///    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///   |  len  |        nonce          |
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///   |p|           payload           |
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///   |         ... padding           |
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///   |              tag              |
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///
+/// Note that each tick mark represents a byte position
+///
+/// The payload has variable length and the padding is used to ensure the frame length is divisible by 16. The amount
+/// of padding is indicated as a single byte `p`. The field `len` is the length of payload + padding + tag + 1.
+///
+/// The packet can also be represented in the following structure:
+///
 /// Frame {
+///     bufLen: u32,
 ///     nonce: [GCM.nonce_length]u8,
-///     bufLen: [4]u8,
-///     padLen: [1]u8,
-///     payload: [?]u8,
+///     padLen: u8,
+///     payload: [bufLen]u8,
 ///     padding: [padLen]u8,
 ///     tag[GCM.tag_length]u8,
 /// }
+///
+/// The first 16 bytes (len + nonce) are encrypted with AES256-ECB. The following N bytes are AES256-GCM encrypted
+/// ( N = 1 + payload.len + padding.len ). Only the last 16 bytes (tag) are left unencrypted.
+///
 pub fn writeFrame(self: Self, data: []const u8) !void {
     const padLen = 16 - (GCM.nonce_length + 5 + data.len + GCM.tag_length) % 16;
     const bufLen = GCM.nonce_length + 5 + data.len + padLen + GCM.tag_length;
@@ -195,6 +220,9 @@ pub fn writeFrame(self: Self, data: []const u8) !void {
     try self.stream.writeAll(buffer[0..]);
 }
 
+/// When reading a frame, the receiver must decrypt the first 16 bytes to figure the length of data and nonce, that is
+/// then used to read and decrypt the following data.
+///
 pub fn readFrame(self: Self, allocator: std.mem.Allocator) ![]u8 {
     var nonceLen: [4 + GCM.nonce_length]u8 = undefined;
 
