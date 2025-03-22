@@ -3,7 +3,6 @@ const AES = std.crypto.core.aes.Aes256;
 const GCM = std.crypto.aead.aes_gcm.Aes256Gcm;
 const Kyber = std.crypto.kem.kyber_d00.Kyber768;
 const X25519 = std.crypto.dh.X25519;
-const pbkdf2 = std.crypto.pwhash.pbkdf2;
 
 const Self = @This();
 
