@@ -158,6 +158,8 @@ pub fn writer(self: Self) Writer {
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///   |p|           payload           |
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///   |              ...              |
+///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///   |         ... padding           |
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ///   |              tag              |
@@ -220,9 +222,8 @@ pub fn writeFrame(self: Self, data: []const u8) !void {
     try self.stream.writeAll(buffer[0..]);
 }
 
-/// When reading a frame, the receiver must decrypt the first 16 bytes to figure the length of data and nonce, that is
-/// then used to read and decrypt the following data.
-///
+/// When reading a frame, the receiver must decrypt the first 16 bytes to figure the length of data and the nonce, that
+/// is then used to read and decrypt the following data.
 pub fn readFrame(self: Self, allocator: std.mem.Allocator) ![]u8 {
     var nonceLen: [4 + GCM.nonce_length]u8 = undefined;
 
