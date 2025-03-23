@@ -15,6 +15,12 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    _ = b.addModule("ztunnel", .{
+        .target = target,
+        .optimize = optimize,
+        .root_source_file = b.path("src/tunnel.zig"),
+    });
+
     const exe = b.addExecutable(.{
         .name = "ztunnel",
         .root_source_file = b.path("src/main.zig"),
