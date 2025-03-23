@@ -23,10 +23,10 @@ pub const PublicKey = struct {
     }
 
     pub fn fromBytes(buf: []const u8) !PublicKey {
-        return .{
-            .ecc = buf[0..X25519.public_length].*,
-            .kyber = try Kyber.PublicKey.fromBytes(buf[X25519.public_length..][0..Kyber.PublicKey.bytes_length]),
-        };
+        var p: PublicKey = undefined;
+        std.mem.copyForwards(u8, &p.ecc, buf[0..X25519.public_length]);
+        p.kyber = try Kyber.PublicKey.fromBytes(buf[X25519.public_length..][0..Kyber.PublicKey.bytes_length]);
+        return p;
     }
 };
 
@@ -43,10 +43,10 @@ pub const PrivateKey = struct {
     }
 
     pub fn fromBytes(buf: []const u8) !PrivateKey {
-        return .{
-            .ecc = buf[0..X25519.secret_length].*,
-            .kyber = try Kyber.SecretKey.fromBytes(buf[X25519.public_length..][0..Kyber.SecretKey.bytes_length]),
-        };
+        var p: PrivateKey = undefined;
+        std.mem.copyForwards(u8, &p.ecc, buf[0..X25519.public_length]);
+        p.kyber = try Kyber.SecretKey.fromBytes(buf[X25519.public_length..][0..Kyber.SecretKey.bytes_length]);
+        return p;
     }
 };
 
