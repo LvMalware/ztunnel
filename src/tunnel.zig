@@ -16,7 +16,6 @@ pub const PublicKey = struct {
     kyber: Kyber.PublicKey,
     pub fn toBytes(self: PublicKey) [X25519.public_length + Kyber.PublicKey.bytes_length]u8 {
         var buf: [X25519.public_length + Kyber.PublicKey.bytes_length]u8 = undefined;
-        defer @memset(&buf, 0);
         std.mem.copyForwards(u8, &buf, &self.ecc);
         std.mem.copyForwards(u8, buf[self.ecc.len..], &self.kyber.toBytes());
         return buf;
@@ -36,7 +35,6 @@ pub const PrivateKey = struct {
 
     pub fn toBytes(self: PrivateKey) [X25519.secret_length + Kyber.SecretKey.bytes_length]u8 {
         var buf: [X25519.secret_length + Kyber.SecretKey.bytes_length]u8 = undefined;
-        defer @memset(&buf, 0);
         std.mem.copyForwards(u8, &buf, &self.ecc);
         std.mem.copyForwards(u8, buf[self.ecc.len..], &self.kyber.toBytes());
         return buf;
