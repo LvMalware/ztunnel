@@ -14,11 +14,40 @@ pub const Mode = enum(u8) {
 pub const PublicKey = struct {
     ecc: [X25519.public_length]u8,
     kyber: Kyber.PublicKey,
+    pub fn toBytes(self: PublicKey) [X25519.public_length + Kyber.PublicKey.bytes_length]u8 {
+        var buf: [X25519.public_length + Kyber.PublicKey.bytes_length]u8 = undefined;
+        defer @memset(&buf, 0);
+        std.mem.copyForwards(u8, &buf, &self.ecc);
+        std.mem.copyForwards(u8, buf[self.ecc.len..], &self.kyber.toBytes());
+        return buf;
+    }
+
+    pub fn fromBytes(buf: []const u8) !PublicKey {
+        return .{
+            .ecc = buf[0..X25519.public_length].*,
+            .kyber = try Kyber.PublicKey.fromBytes(buf[X25519.public_length..][0..Kyber.PublicKey.bytes_length]),
+        };
+    }
 };
 
 pub const PrivateKey = struct {
     ecc: [X25519.secret_length]u8,
     kyber: Kyber.SecretKey,
+
+    pub fn toBytes(self: PrivateKey) [X25519.secret_length + Kyber.SecretKey.bytes_length]u8 {
+        var buf: [X25519.secret_length + Kyber.SecretKey.bytes_length]u8 = undefined;
+        defer @memset(&buf, 0);
+        std.mem.copyForwards(u8, &buf, &self.ecc);
+        std.mem.copyForwards(u8, buf[self.ecc.len..], &self.kyber.toBytes());
+        return buf;
+    }
+
+    pub fn fromBytes(buf: []const u8) !PrivateKey {
+        return .{
+            .ecc = buf[0..X25519.secret_length].*,
+            .kyber = try Kyber.SecretKey.fromBytes(buf[X25519.public_length..][0..Kyber.SecretKey.bytes_length]),
+        };
+    }
 };
 
 pub const KeyPair = struct {
