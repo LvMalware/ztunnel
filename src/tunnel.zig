@@ -97,9 +97,7 @@ pub fn keyExchange(self: *Self, mode: Mode) !void {
 
     switch (mode) {
         .client => {
-            const kyber_public = self.keypair.public.kyber.toBytes();
-            try self.stream.writeAll(&self.keypair.public.ecc);
-            try self.stream.writeAll(&kyber_public);
+            try self.stream.writeAll(&self.keypair.public.toBytes());
 
             var ecc_public: [X25519.public_length]u8 = undefined;
             var kyber_ciphertext: [Kyber.ciphertext_length]u8 = undefined;
@@ -119,16 +117,14 @@ pub fn keyExchange(self: *Self, mode: Mode) !void {
             sha3.update(&shared_kyber);
         },
         .server => {
-            var ecc_public: [X25519.public_length]u8 = undefined;
-            var kyber_public: [Kyber.PublicKey.bytes_length]u8 = undefined;
-            if (try self.stream.readAll(&ecc_public) != ecc_public.len) return error.BrokenPipe;
-            if (try self.stream.readAll(&kyber_public) != kyber_public.len) return error.BrokenPipe;
+            var public: [X25519.public_length + Kyber.PublicKey.bytes_length]u8 = undefined;
+            if (try self.stream.readAll(&public) != public.len) return error.BrokenPipe;
+            const client = try PublicKey.fromBytes(&public);
 
             // TODO: optionally, verify peer's public key
 
-            const kyber = try Kyber.PublicKey.fromBytes(&kyber_public);
-            var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, ecc_public);
-            var shared_kyber = kyber.encaps(null);
+            var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, client.ecc);
+            var shared_kyber = client.kyber.encaps(null);
             defer {
                 @memset(&shared_ecc, 0);
                 @memset(&shared_kyber.shared_secret, 0);
