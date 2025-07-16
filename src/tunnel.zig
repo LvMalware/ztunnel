@@ -73,7 +73,9 @@ pub const Writer = std.io.Writer(Self, anyerror, write);
 prng: *std.Random.Xoshiro256,
 secret: [GCM.key_length]u8,
 stream: std.net.Stream,
+verify: bool,
 keypair: KeyPair,
+allowed: std.ArrayList([]u8),
 allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: ?KeyPair) Self {
@@ -82,10 +84,29 @@ pub fn init(allocator: std.mem.Allocator, stream: std.net.Stream, keypair: ?KeyP
     return .{
         .prng = prng,
         .secret = undefined,
+        .verify = false,
         .stream = stream,
         .keypair = keypair orelse KeyPair.generate(),
+        .allowed = std.ArrayList([]u8).init(allocator),
         .allocator = allocator,
     };
+}
+
+/// add a public key to the allow-list, after this function is called, the handshake process will validate that
+/// ECC keys are allowed.
+pub fn addAllowed(self: *Self, public: [X25519.public_length]u8) !void {
+    const clone = try self.allocator.dupe(u8, &public);
+    errdefer self.allocator.free(clone);
+    try self.allowed.append(clone);
+    self.verify = true;
+}
+
+/// verify that a given ECC public key is allowed
+pub fn isAllowed(self: Self, public: [X25519.public_length]u8) bool {
+    for (self.allowed.items) |allowed| {
+        if (std.mem.eql(u8, allowed, &public)) return true;
+    }
+    return !self.verify;
 }
 
 /// use X25519Kyber768 to perform key-exchange.
@@ -104,7 +125,7 @@ pub fn keyExchange(self: *Self, mode: Mode) !void {
             if (try self.stream.readAll(&ecc_public) != ecc_public.len) return error.BrokenPipe;
             if (try self.stream.readAll(&kyber_ciphertext) != kyber_ciphertext.len) return error.BrokenPipe;
 
-            // TODO: optionally, verify peer's public key
+            if (!self.isAllowed(ecc_public)) return error.PublicKeyNotAllowed;
 
             var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, ecc_public);
             var shared_kyber = try self.keypair.private.kyber.decaps(&kyber_ciphertext);
@@ -121,7 +142,7 @@ pub fn keyExchange(self: *Self, mode: Mode) !void {
             if (try self.stream.readAll(&public) != public.len) return error.BrokenPipe;
             const client = try PublicKey.fromBytes(&public);
 
-            // TODO: optionally, verify peer's public key
+            if (!self.isAllowed(public[0..X25519.public_length].*)) return error.PublicKeyNotAllowed;
 
             var shared_ecc = try X25519.scalarmult(self.keypair.private.ecc, client.ecc);
             var shared_kyber = client.kyber.encaps(null);
@@ -147,6 +168,10 @@ pub fn deinit(self: *Self) void {
     self.stream.close();
     @memset(self.secret[0..], 0);
     self.allocator.destroy(self.prng);
+    for (self.allowed.items) |public| {
+        self.allocator.free(public);
+    }
+    self.allowed.deinit();
 }
 
 pub fn write(self: Self, buffer: []const u8) !usize {

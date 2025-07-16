@@ -29,6 +29,8 @@ pub fn main() !void {
     var tunnel = Tunnel.init(allocator, stream, null);
     defer tunnel.deinit();
 
+    // try tunnel.addAllowed([1]u8{0} ** 32); // handshake will fail
+
     try tunnel.keyExchange(mode);
     std.debug.print("Handshake OK\n", .{});
 
